@@ -1,0 +1,14 @@
+[package]
+name = "globlint"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Validating parser and pretty printer for file glob patterns"
+
+[[bin]]
+name = "globlint"
+path = "src/main.rs"
+
+[lib]
+name = "globlint"
+path = "src/lib.rs"
