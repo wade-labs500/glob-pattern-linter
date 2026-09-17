@@ -58,6 +58,21 @@ fn main() {
 }
 ```
 
+Once parsed, a `Glob` can also match paths directly:
+
+```rust
+use globlint::parse;
+
+let g = parse("src/**/*.rs").unwrap();
+assert!(g.matches("src/lib.rs"));
+assert!(g.matches("src/parser/mod.rs"));
+assert!(!g.matches("src/lib.txt"));
+```
+
+`*` and character classes never cross a `/`; `**` stands in for zero or
+more whole path components. There's no dotfile special-casing: `*` matches
+a component starting with `.` the same as any other component.
+
 ## Supported syntax
 
 - literals, escaped with `\` when they'd otherwise be special
@@ -76,6 +91,7 @@ simple alternation (no `{1..5}` ranges).
 
 ## Status
 
-First pass. The parser, validator, and pretty printer are complete for the
-grammar above; there's no matcher yet (turning a `Glob` into "does this
-path match" is separate future work, see below).
+The parser, validator, pretty printer, and matcher (`Glob::matches`) are
+complete for the grammar above. Not yet done: POSIX bracket expressions
+like `[[:alpha:]]`, a fuzz harness for the parser, `!` negation prefixes,
+and a `--check` mode that reads patterns from a file.

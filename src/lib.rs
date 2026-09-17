@@ -63,6 +63,101 @@ impl Glob {
     pub fn segments(&self) -> &[Segment] {
         &self.0
     }
+
+    /// Reports whether `path` matches this pattern.
+    ///
+    /// Matching is component-by-component, split on `/`. `*` and character
+    /// classes never cross a `/`; `**` matches zero or more whole
+    /// components. There is no special-casing of leading dots: `*` matches
+    /// a component that starts with `.` just like it matches anything else.
+    pub fn matches(&self, path: &str) -> bool {
+        let components = split_components(&self.0);
+        let path_components: Vec<&str> = path.split('/').collect();
+        match_components(&components, &path_components)
+    }
+}
+
+/// A pattern broken at `/` boundaries: either a literal-ish sequence that
+/// must match exactly one path component, or a `**` that can stand in for
+/// any number of components.
+enum Component<'a> {
+    One(&'a [Segment]),
+    DoubleStar,
+}
+
+fn split_components(segs: &[Segment]) -> Vec<Component<'_>> {
+    let mut comps = Vec::new();
+    let mut start = 0;
+    for (i, seg) in segs.iter().enumerate() {
+        if *seg == Segment::Slash {
+            comps.push(to_component(&segs[start..i]));
+            start = i + 1;
+        }
+    }
+    comps.push(to_component(&segs[start..]));
+    comps
+}
+
+fn to_component(slice: &[Segment]) -> Component<'_> {
+    // validate() guarantees `**` never shares a component with anything
+    // else, so a single DoubleStar here always fills the whole slice.
+    if let [Segment::DoubleStar] = slice {
+        Component::DoubleStar
+    } else {
+        Component::One(slice)
+    }
+}
+
+fn match_components(pat: &[Component], path: &[&str]) -> bool {
+    match pat.first() {
+        None => path.is_empty(),
+        Some(Component::DoubleStar) => (0..=path.len())
+            .any(|skip| match_components(&pat[1..], &path[skip..])),
+        Some(Component::One(segs)) => match path.first() {
+            Some(head) => {
+                match_component(segs, head) && match_components(&pat[1..], &path[1..])
+            }
+            None => false,
+        },
+    }
+}
+
+fn match_component(segs: &[Segment], text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    match_seq(segs, &chars)
+}
+
+fn match_seq(segs: &[Segment], chars: &[char]) -> bool {
+    match segs.first() {
+        None => chars.is_empty(),
+        Some(Segment::Literal(lit)) => {
+            let lit_chars: Vec<char> = lit.chars().collect();
+            chars.len() >= lit_chars.len()
+                && chars[..lit_chars.len()] == lit_chars[..]
+                && match_seq(&segs[1..], &chars[lit_chars.len()..])
+        }
+        Some(Segment::Star) => (0..=chars.len()).any(|skip| match_seq(&segs[1..], &chars[skip..])),
+        Some(Segment::Question) => !chars.is_empty() && match_seq(&segs[1..], &chars[1..]),
+        Some(Segment::Class(class)) => {
+            !chars.is_empty() && class_matches(class, chars[0]) && match_seq(&segs[1..], &chars[1..])
+        }
+        Some(Segment::Alt(branches)) => branches.iter().any(|branch| {
+            let mut combined = branch.clone();
+            combined.extend_from_slice(&segs[1..]);
+            match_seq(&combined, chars)
+        }),
+        // Slash and DoubleStar never appear inside a Component::One slice:
+        // split_components() cuts on both of them.
+        Some(Segment::Slash) | Some(Segment::DoubleStar) => unreachable!(),
+    }
+}
+
+fn class_matches(class: &CharClass, c: char) -> bool {
+    let hit = class.items.iter().any(|item| match item {
+        ClassItem::Char(ch) => *ch == c,
+        ClassItem::Range(a, b) => *a <= c && c <= *b,
+    });
+    hit != class.negated
 }
 
 impl fmt::Display for Glob {
@@ -424,5 +519,55 @@ mod tests {
     #[test]
     fn allows_leading_bracket_literal() {
         assert_eq!(pretty_print("[]]").unwrap(), "[\\]]");
+    }
+
+    fn matches(pattern: &str, path: &str) -> bool {
+        parse(pattern).unwrap().matches(path)
+    }
+
+    #[test]
+    fn matches_literal_path() {
+        assert!(matches("src/lib.rs", "src/lib.rs"));
+        assert!(!matches("src/lib.rs", "src/main.rs"));
+    }
+
+    #[test]
+    fn star_matches_within_one_component() {
+        assert!(matches("src/*.rs", "src/lib.rs"));
+        assert!(!matches("src/*.rs", "src/sub/lib.rs"));
+    }
+
+    #[test]
+    fn double_star_matches_any_depth_including_zero() {
+        assert!(matches("src/**/*.rs", "src/lib.rs"));
+        assert!(matches("src/**/*.rs", "src/a/b/c/lib.rs"));
+        assert!(!matches("src/**/*.rs", "src/lib.txt"));
+    }
+
+    #[test]
+    fn question_matches_exactly_one_char() {
+        assert!(matches("a?c", "abc"));
+        assert!(!matches("a?c", "ac"));
+        assert!(!matches("a?c", "abbc"));
+    }
+
+    #[test]
+    fn class_and_negated_class() {
+        assert!(matches("[abc].txt", "b.txt"));
+        assert!(!matches("[abc].txt", "d.txt"));
+        assert!(matches("[!abc].txt", "d.txt"));
+        assert!(!matches("[!abc].txt", "a.txt"));
+    }
+
+    #[test]
+    fn alternation_matches_any_branch() {
+        assert!(matches("*.{rs,toml}", "Cargo.toml"));
+        assert!(matches("*.{rs,toml}", "lib.rs"));
+        assert!(!matches("*.{rs,toml}", "README.md"));
+    }
+
+    #[test]
+    fn star_does_not_special_case_leading_dot() {
+        assert!(matches("*.rs", ".rs"));
     }
 }
